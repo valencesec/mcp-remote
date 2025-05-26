@@ -86,7 +86,7 @@ export function log(str: string, ...rest: unknown[]) {
  * Creates a bidirectional proxy between two transports
  * @param params The transport connections to proxy between
  */
-export function mcpProxy({ transportToClient, transportToServer }: { transportToClient: Transport; transportToServer: Transport }) {
+export function mcpProxy({ transportToClient, transportToServer, toolsToIgnoreRegex }: { transportToClient: Transport; transportToServer: Transport, toolsToIgnoreRegex: RegExp | null }) {
   let transportToClientClosed = false
   let transportToServerClosed = false
 
@@ -130,6 +130,16 @@ export function mcpProxy({ transportToClient, transportToServer }: { transportTo
       }).catch(() => {})
     }
 
+    if (toolsToIgnoreRegex && message && message.result && message.result.tools && message.result.tools.length) {
+      log('Received tools from remote server:', message.result.tools.length);
+      message.result.tools = message.result.tools.filter((tool: any) => {
+        if (tool.name && tool.name.match(toolsToIgnoreRegex)) {
+          log('Ignoring tool with name matching regex:', tool.name);
+          return false
+        }
+        return true
+      })
+    }
     transportToClient.send(message).catch(onClientError)
   }
 
@@ -336,7 +346,8 @@ export async function connectToRemoteServer(
 
         // Recursively call connectToRemoteServer with the updated recursion tracking
         return connectToRemoteServer(client, serverUrl, authProvider, headers, authInitializer, transportStrategy, recursionReasons)
-      } catch (authError) {
+      } catch (authErrorUnknown) {
+        const authError = authErrorUnknown as Error
         log('Authorization error:', authError)
         if (DEBUG) await debugLog('Authorization error during finishAuth', { errorMessage: authError.message, stack: authError.stack })
         throw authError
@@ -344,8 +355,8 @@ export async function connectToRemoteServer(
     } else {
       log('Connection error:', error)
       if (DEBUG) await debugLog('Connection error', {
-        errorMessage: error.message,
-        stack: error.stack,
+        errorMessage: (error as Error).message,
+        stack: (error as Error).stack,
         transportType: transport.constructor.name
       })
       throw error
@@ -574,6 +585,22 @@ export async function parseCommandLineArgs(args: string[], usage: string) {
     log(`Using callback hostname: ${host}`)
   }
 
+  // parse tools to ignore regex, if provided
+  let toolsToIgnoreRegex: RegExp | null = null
+  const toolsToIgnoreRegexIndex = args.indexOf('--tools-to-ignore-regex')
+  if (toolsToIgnoreRegexIndex !== -1 && toolsToIgnoreRegexIndex < args.length - 1) {
+    const toolsToIgnoreRegexArg = args[toolsToIgnoreRegexIndex + 1]
+    try {
+      toolsToIgnoreRegex = new RegExp(toolsToIgnoreRegexArg)
+      log(`Using tools to ignore regex: ${toolsToIgnoreRegex}`)
+    } catch (error) {
+      log(`Error: Invalid regex for --tools-to-ignore-regex: ${toolsToIgnoreRegexArg}. Using no regex.`)
+      toolsToIgnoreRegex = null
+    }
+  } else {
+    log(`No tools to ignore regex provided. Using no regex.`)
+  }
+
   let staticOAuthClientMetadata: StaticOAuthClientMetadata = null
   const staticOAuthClientMetadataIndex = args.indexOf('--static-oauth-client-metadata')
   if (staticOAuthClientMetadataIndex !== -1 && staticOAuthClientMetadataIndex < args.length - 1) {
@@ -668,7 +695,7 @@ export async function parseCommandLineArgs(args: string[], usage: string) {
     })
   }
 
-  return { serverUrl, callbackPort, headers, transportStrategy, host, debug, staticOAuthClientMetadata, staticOAuthClientInfo }
+  return { serverUrl, callbackPort, headers, transportStrategy, host, debug, staticOAuthClientMetadata, staticOAuthClientInfo, toolsToIgnoreRegex }
 }
 
 /**
